@@ -6,25 +6,49 @@ import datetime
 import os
 import warnings
 
-# ================================================================
+# ==============================================================================================
 # USER INPUT
-# ================================================================
+# ==============================================================================================
 # Change this to a list of any signals in your CSV you want to test
 # This list is used if 'test_all_strategies' is set to False
-signals_to_test = ["Beta", "CoskewACX","GP","OperProf","OperProfRD", "ShortInterest"
+signals_to_test = [
+    "CustomerMomentum",
+    "FirmAgeMom",
+    "IndMom",
+    "IntMom",
+    "Mom12m",
+    "Mom12mOffSeason",
+    "Mom6m",
+    "Mom6mJunk",
+    "MomOffSeason",
+    "MomOffSeason06YrPlus",
+    "MomOffSeason11YrPlus",
+    "MomOffSeason16YrPlus",
+    "MomRev",
+    "MomSeason",
+    "MomSeason06YrPlus",
+    "MomSeason11YrPlus",
+    "MomSeason16YrPlus",
+    "MomSeasonShort",
+    "MomVol",
+    "ResidualMomentum",
+    "TrendFactor",
+    "VolumeTrend",
+    "iomom_cust",
+    "iomom_supp"
 ]
-
+#==============================================================================================
 # NEW TOGGLE TO TEST ALL STRATEGIES
 # Set to True to automatically test all unique signals found in PredictorPortsFull.csv
 # This will override the signals_to_test list above.
 # Set to False to use the specific signals in the list above.
-test_all_strategies = True
-
+test_all_strategies = False
+#==============================================================================================
 # NEW SETTING FOR BAR GRAPH PLOTS
 # If testing a large number of strategies, this will split the final bar graph
 # into multiple plots, each containing this many strategies.
 strategies_per_plot = 25
-
+#==============================================================================================
 # TOGGLE FOR DATE LOADING
 # Set to True to automatically load in-sample dates from PredictorSummary.csv
 # Set to False to manually specify your own dates below
@@ -33,24 +57,46 @@ auto_load_dates = True
 # MANUALLY SPECIFY DATES IF auto_load_dates IS False
 manual_start_year = 2003
 manual_end_year = 2023
-
+#==============================================================================================
 # TOGGLE FOR PRE-PUBLICATION OOS
 # Set to True to include a pre-sample period for backtesting.
-run_pre_sample = True
+run_pre_sample = False
 
 # NEW SETTING FOR DYNAMIC PRE-SAMPLE PERIOD
 # Set to True to use ALL available historical data before the in-sample period.
 # This overrides any manual pre-sample date settings from a previous version.
-run_pre_sample_all_data = True
+run_pre_sample_all_data = False
 
 # MINIMUM PRE-PUBLICATION PERIOD
 # Strategies with pre-sample data less than this value will be skipped from the analysis.
 min_pre_sample_years = 5
-
+#==============================================================================================
 # TOGGLE FOR FULL SAMPLE BACKTEST
 # Set to True to run a single, full-sample backtest with no out-of-sample split.
 # This will override run_pre_sample and auto_load_dates.
 run_full_sample = False
+#==============================================================================================
+# TOGGLE FOR MOMENT DISTRIBUTION PLOTS
+# Set to True to generate distribution plots of statistical moments across all strategies
+# Set to False to skip moment distribution plots
+generate_moment_distributions = True
+
+# TOGGLE FOR RETURN DISTRIBUTION PLOTS
+# Set to True to plot return distributions for all portfolios (LS, 1, 2, 3, etc.)
+# Set to False to plot only the Long-Short (LS) portfolio
+plot_all_portfolios = False
+# MOMENT DISTRIBUTION SETTING
+# Set to 1-4 to control which moments are included in the distribution plots:
+# 1 = Mean (CAGR) only
+# 2 = Mean (CAGR) and Variance
+# 3 = Mean (CAGR), Variance, and Skewness
+# 4 = Mean (CAGR), Variance, Skewness, and Kurtosis
+moment_distribution_level = 1
+
+# ROLLING WINDOW SETTING FOR MOMENT DISTRIBUTIONS
+# Number of months to use for rolling window calculations of moments
+# This creates distributions from rolling statistics rather than single point estimates
+rolling_window_months = 24
 
 # TITLE SUFFIX FOR PLOTS
 # This will be prompted at runtime - see below
@@ -61,35 +107,59 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PREDICTOR_PORTS_FILE = os.path.join(SCRIPT_DIR, "PredictorPortsFull.csv")
 PREDICTOR_SUMMARY_FILE = os.path.join(SCRIPT_DIR, "PredictorSummary.csv")
 
-# Create output directories
-OUTPUT_BACKTEST = os.path.join(SCRIPT_DIR, "backtest_plots")
-OUTPUT_TRAILING_CAGR = os.path.join(SCRIPT_DIR, "trailing_cagr_plots")
-OUTPUT_RAW_RETURNS = os.path.join(SCRIPT_DIR, "raw_returns")
-OUTPUT_SUMMARY = os.path.join(SCRIPT_DIR, "summary_plots")
-OUTPUT_ROLLING = os.path.join(SCRIPT_DIR, "rolling_plots")
-
-# Create directories if they don't exist
-for output_dir in [OUTPUT_BACKTEST, OUTPUT_TRAILING_CAGR, OUTPUT_RAW_RETURNS, OUTPUT_SUMMARY, OUTPUT_ROLLING]:
-    os.makedirs(output_dir, exist_ok=True)
-
 # ================================================================
-# PROMPT FOR PLOT TITLE SUFFIX
+# PROMPT FOR PLOT TITLE SUFFIX (needed before creating output folders)
 # ================================================================
 print("\n" + "="*80)
 print("PLOT TITLE SUFFIX")
 print("="*80)
 print("Enter a suffix to add to all plot titles (e.g., 'Momentum', 'Value Strategies', etc.)")
-print("Type 'NONE' or press Enter to skip adding a suffix.")
+print("This will also be used as the output folder name to organize all outputs.")
+print("Type 'NONE' or press Enter to skip adding a suffix (will use 'Output' as folder name).")
 suffix_input = input("Plot title suffix: ").strip()
 
 # Process the input: if NONE, empty, or just whitespace, set to empty string
 if suffix_input.upper() == "NONE" or suffix_input == "":
     plot_title_suffix = ""
+    output_folder_name = "Output"
     print("No suffix will be added to plot titles.")
+    print(f"Outputs will be organized in folder: '{output_folder_name}'")
 else:
     plot_title_suffix = suffix_input
+    # Sanitize folder name: replace invalid filesystem characters
+    output_folder_name = plot_title_suffix.replace("/", "_").replace("\\", "_").replace(":", "_").replace("*", "_").replace("?", "_").replace('"', "_").replace("<", "_").replace(">", "_").replace("|", "_")
     print(f"Plot titles will include: '{plot_title_suffix}'")
+    print(f"Outputs will be organized in folder: '{output_folder_name}'")
 print("="*80 + "\n")
+
+# Create base output directory with suffix name
+OUTPUT_BASE = os.path.join(SCRIPT_DIR, output_folder_name)
+
+# Create output directories under the base folder
+OUTPUT_BACKTEST = os.path.join(OUTPUT_BASE, "backtest_plots")
+OUTPUT_TRAILING_CAGR = os.path.join(OUTPUT_BASE, "trailing_cagr_plots")
+OUTPUT_RAW_RETURNS = os.path.join(OUTPUT_BASE, "raw_returns")
+OUTPUT_SUMMARY = os.path.join(OUTPUT_BASE, "summary_plots")
+OUTPUT_ROLLING = os.path.join(OUTPUT_BASE, "rolling_plots")
+OUTPUT_DISTRIBUTIONS = os.path.join(OUTPUT_BASE, "Distributions")
+OUTPUT_DISTRIBUTIONS_AGGREGATE = os.path.join(OUTPUT_DISTRIBUTIONS, "aggregate")
+OUTPUT_DISTRIBUTIONS_INDIVIDUAL = os.path.join(OUTPUT_DISTRIBUTIONS, "individual")
+
+# Create moment-specific subfolders
+MOMENT_NAMES = ['Mean', 'Variance', 'Skewness', 'Kurtosis']
+OUTPUT_DISTRIBUTIONS_AGGREGATE_MOMENTS = {
+    moment: os.path.join(OUTPUT_DISTRIBUTIONS_AGGREGATE, moment) for moment in MOMENT_NAMES
+}
+OUTPUT_DISTRIBUTIONS_INDIVIDUAL_MOMENTS = {
+    moment: os.path.join(OUTPUT_DISTRIBUTIONS_INDIVIDUAL, moment) for moment in MOMENT_NAMES
+}
+
+# Create directories if they don't exist
+base_dirs = [OUTPUT_BASE, OUTPUT_BACKTEST, OUTPUT_TRAILING_CAGR, OUTPUT_RAW_RETURNS, OUTPUT_SUMMARY, 
+             OUTPUT_ROLLING, OUTPUT_DISTRIBUTIONS, OUTPUT_DISTRIBUTIONS_AGGREGATE, OUTPUT_DISTRIBUTIONS_INDIVIDUAL]
+moment_dirs = list(OUTPUT_DISTRIBUTIONS_AGGREGATE_MOMENTS.values()) + list(OUTPUT_DISTRIBUTIONS_INDIVIDUAL_MOMENTS.values())
+for output_dir in base_dirs + moment_dirs:
+    os.makedirs(output_dir, exist_ok=True)
 
 # ================================================================
 # CAGR FUNCTION
@@ -107,6 +177,69 @@ def calculate_cagr(returns):
     if final_value <= 0:
         return np.nan
     return ((final_value ** (1 / num_years)) - 1) * 100
+
+# ================================================================
+# STATISTICS FUNCTIONS
+# ================================================================
+def calculate_max_drawdown(returns):
+    """Calculates the maximum drawdown from a series of monthly returns."""
+    if returns.empty:
+        return np.nan
+    returns = returns / 100.0
+    cumulative = (1 + returns).cumprod()
+    running_max = cumulative.expanding().max()
+    drawdown = (cumulative - running_max) / running_max
+    return drawdown.min() * 100  # Return as percentage
+
+def calculate_sharpe_ratio(returns, risk_free_rate=0.0):
+    """Calculates the annualized Sharpe ratio from monthly returns."""
+    if returns.empty or len(returns) < 2:
+        return np.nan
+    returns = returns / 100.0
+    excess_returns = returns - (risk_free_rate / 12.0)  # Convert annual RF to monthly
+    mean_excess = excess_returns.mean()
+    std_excess = excess_returns.std()
+    if std_excess == 0:
+        return np.nan
+    # Annualize: multiply by sqrt(12) for monthly data
+    return (mean_excess / std_excess) * np.sqrt(12)
+
+def calculate_calmar_ratio(returns):
+    """Calculates the Calmar ratio (CAGR / abs(max drawdown))."""
+    cagr = calculate_cagr(returns)
+    max_dd = calculate_max_drawdown(returns)
+    if np.isnan(cagr) or np.isnan(max_dd) or max_dd == 0:
+        return np.nan
+    return cagr / abs(max_dd)
+
+def calculate_rolling_moments(returns, window_months):
+    """Calculates rolling moments (CAGR, variance, skewness, kurtosis) over a rolling window."""
+    if returns.empty or len(returns) < window_months:
+        return {
+            'CAGR (%)': pd.Series(dtype=float),
+            'Variance': pd.Series(dtype=float),
+            'Skewness': pd.Series(dtype=float),
+            'Kurtosis': pd.Series(dtype=float)
+        }
+    
+    rolling_cagr = returns.rolling(window=window_months).apply(
+        lambda x: calculate_cagr(x) if len(x) == window_months else np.nan, raw=False
+    )
+    
+    rolling_variance = returns.rolling(window=window_months).var()
+    
+    rolling_skewness = returns.rolling(window=window_months).skew()
+    
+    rolling_kurtosis = returns.rolling(window=window_months).apply(
+        lambda x: x.kurtosis() if len(x) == window_months else np.nan, raw=False
+    )
+    
+    return {
+        'CAGR (%)': rolling_cagr,
+        'Variance': rolling_variance,
+        'Skewness': rolling_skewness,
+        'Kurtosis': rolling_kurtosis
+    }
 
 # ================================================================
 # STEP 1: DATA LOADING
@@ -140,6 +273,66 @@ print(f"Data for {len(signals_to_test)} signals loaded successfully.")
 
 # Storage for all LS results for the final summary graph
 ls_cagr_results = []
+
+# Storage for all strategy CAGR values for distribution plot
+all_strategy_cagrs = []
+
+# Storage for all strategy rolling moments for distribution plots (by period)
+# These will contain lists of rolling statistics, not single values
+all_strategy_rolling_moments_by_period = {
+    'In-Sample': {
+        'CAGR (%)': [],
+        'Variance': [],
+        'Skewness': [],
+        'Kurtosis': []
+    },
+    'Out-of-Sample': {
+        'CAGR (%)': [],
+        'Variance': [],
+        'Skewness': [],
+        'Kurtosis': []
+    },
+    'Post-Publication': {
+        'CAGR (%)': [],
+        'Variance': [],
+        'Skewness': [],
+        'Kurtosis': []
+    },
+    'Full Sample': {
+        'CAGR (%)': [],
+        'Variance': [],
+        'Skewness': [],
+        'Kurtosis': []
+    }
+}
+
+# Storage for final (non-rolling) statistics by period for aggregate plots
+all_strategy_final_moments_by_period = {
+    'In-Sample': {
+        'CAGR (%)': [],
+        'Variance': [],
+        'Skewness': [],
+        'Kurtosis': []
+    },
+    'Out-of-Sample': {
+        'CAGR (%)': [],
+        'Variance': [],
+        'Skewness': [],
+        'Kurtosis': []
+    },
+    'Post-Publication': {
+        'CAGR (%)': [],
+        'Variance': [],
+        'Skewness': [],
+        'Kurtosis': []
+    },
+    'Full Sample': {
+        'CAGR (%)': [],
+        'Variance': [],
+        'Skewness': [],
+        'Kurtosis': []
+    }
+}
 
 # Storage for rolling 5-year growth aligned by months since publication
 aligned_series = {}
@@ -613,6 +806,328 @@ for signal_to_test in signals_to_test:
         print(performance_df.round(2).to_string())
 
     # ================================================================
+    # STEP 6.5: STATISTICS CALCULATION (Return distribution plots removed - redundant with moment distributions)
+    # ================================================================
+    print("\nCalculating statistics...")
+    
+    # Filter portfolios based on toggle
+    if not plot_all_portfolios:
+        # Only analyze LS portfolio
+        portfolios_to_analyze = ['LS'] if 'LS' in portfolio_returns.columns else []
+    else:
+        # Analyze all portfolios
+        portfolios_to_analyze = portfolio_returns.columns.tolist()
+    
+    # Prepare data for different periods
+    if run_full_sample:
+        # For full sample, only show full sample period
+        in_sample_returns = portfolio_returns
+        out_of_sample_returns = pd.DataFrame()  # Empty
+        full_sample_returns = portfolio_returns
+        periods_to_show = ['Full Sample']
+    elif run_pre_sample and run_pre_sample_all_data:
+        # For pre-sample mode, show pre-sample, in-sample, and post-sample
+        in_sample_returns = portfolio_returns[(portfolio_returns.index > pre_sample_end_date) & 
+                                               (portfolio_returns.index <= sample_end_date)]
+        out_of_sample_returns = portfolio_returns[portfolio_returns.index >= out_of_sample_start_date]
+        full_sample_returns = portfolio_returns
+        periods_to_show = ['In-Sample', 'Post-Publication', 'Full Sample']
+    else:
+        # Standard mode: show in-sample, out-of-sample, and full sample
+        in_sample_returns = portfolio_returns[(portfolio_returns.index >= sample_start_date) & 
+                                               (portfolio_returns.index <= sample_end_date)]
+        out_of_sample_returns = portfolio_returns[portfolio_returns.index >= out_of_sample_start_date]
+        full_sample_returns = portfolio_returns
+        periods_to_show = ['In-Sample', 'Out-of-Sample', 'Full Sample']
+    
+    # Calculate statistics for each portfolio and period
+    all_stats = {}  # {port: {period: stats_dict}}
+    
+    for port in portfolios_to_analyze:
+        if port not in portfolio_returns.columns:
+            continue
+        
+        all_stats[port] = {}
+        
+        # Calculate statistics for each period
+        for period_name, period_returns in [
+            ('In-Sample', in_sample_returns),
+            ('Out-of-Sample', out_of_sample_returns),
+            ('Post-Publication', out_of_sample_returns if run_pre_sample and run_pre_sample_all_data else pd.DataFrame()),
+            ('Full Sample', full_sample_returns)
+        ]:
+            if period_name not in periods_to_show:
+                continue
+            
+            if port not in period_returns.columns or period_returns.empty:
+                continue
+            
+            port_returns = period_returns[port].dropna()
+            if len(port_returns) == 0:
+                continue
+            
+            # Calculate all statistics
+            mean_ret = port_returns.mean()
+            variance = port_returns.var()
+            std_dev = port_returns.std()
+            skewness = port_returns.skew()
+            kurtosis = port_returns.kurtosis()
+            max_dd = calculate_max_drawdown(port_returns)
+            sharpe = calculate_sharpe_ratio(port_returns)
+            calmar = calculate_calmar_ratio(port_returns)
+            cagr = calculate_cagr(port_returns)
+            
+            all_stats[port][period_name] = {
+                'returns': port_returns,
+                'Mean (%)': mean_ret,
+                'Variance': variance,
+                'Skewness': skewness,
+                'Kurtosis': kurtosis,
+                'Max Drawdown (%)': max_dd,
+                'Sharpe Ratio': sharpe,
+                'Calmar Ratio': calmar,
+                'CAGR (%)': cagr
+            }
+            
+            # Store CAGR for final distribution plot (only for LS portfolio, use out-of-sample or post-publication)
+            if port == 'LS' and not np.isnan(cagr) and period_name in ['Out-of-Sample', 'Post-Publication']:
+                all_strategy_cagrs.append(cagr)
+            
+            # Calculate and store moments for moment distribution plots
+            # Include all portfolios if plot_all_portfolios is True, otherwise just LS
+            if generate_moment_distributions and (plot_all_portfolios or port == 'LS'):
+                # Calculate rolling moments for this period (for individual strategy plots)
+                rolling_moments = calculate_rolling_moments(port_returns, rolling_window_months)
+                
+                # Store rolling values by period for individual strategy plots
+                period_key = period_name
+                if period_key in all_strategy_rolling_moments_by_period:
+                    for moment_name in ['CAGR (%)', 'Variance', 'Skewness', 'Kurtosis']:
+                        rolling_values = rolling_moments[moment_name].dropna().tolist()
+                        all_strategy_rolling_moments_by_period[period_key][moment_name].extend(rolling_values)
+                
+                # Store FINAL (non-rolling) statistics for aggregate plots (one value per strategy)
+                # Store by period for all periods
+                # ONLY use LS portfolios for aggregate distributions
+                if port == 'LS':
+                    period_key = period_name
+                    if period_key in all_strategy_final_moments_by_period:
+                        # Use final statistics, not rolling - one value per strategy per period
+                        if not np.isnan(cagr):
+                            all_strategy_final_moments_by_period[period_key]['CAGR (%)'].append(cagr)
+                        if not np.isnan(variance):
+                            all_strategy_final_moments_by_period[period_key]['Variance'].append(variance)
+                        if not np.isnan(skewness):
+                            all_strategy_final_moments_by_period[period_key]['Skewness'].append(skewness)
+                        if not np.isnan(kurtosis):
+                            all_strategy_final_moments_by_period[period_key]['Kurtosis'].append(kurtosis)
+    
+    # Skip return distribution plots - they're redundant with moment distributions
+    # Statistics are still calculated and printed below
+    # Return distribution plotting code removed - moment distributions are used instead
+    
+    # Print statistics tables
+    if len(all_stats) > 0:
+        print(f"\n--- Statistics for {signal_to_test} ---")
+        for port in all_stats.keys():
+            print(f"\n{signal_to_test} {port}:")
+            for period_name in periods_to_show:
+                if period_name in all_stats[port]:
+                    stats = all_stats[port][period_name]
+                    print(f"  {period_name}:")
+                    print(f"    Mean: {stats['Mean (%)']:.4f}%, Variance: {stats['Variance']:.4f}, "
+                          f"Skewness: {stats['Skewness']:.4f}, Kurtosis: {stats['Kurtosis']:.4f}")
+                    print(f"    Max DD: {stats['Max Drawdown (%)']:.4f}%, Sharpe: {stats['Sharpe Ratio']:.4f}, "
+                          f"Calmar: {stats['Calmar Ratio']:.4f}, CAGR: {stats['CAGR (%)']:.4f}%")
+    
+    # ================================================================
+    # INDIVIDUAL STRATEGY MOMENT DISTRIBUTION PLOTS
+    # ================================================================
+    if generate_moment_distributions and len(all_stats) > 0:
+        print(f"\nGenerating individual moment distribution plots for {signal_to_test}...")
+        
+        # Create for all portfolios if plot_all_portfolios is True, otherwise just LS
+        portfolios_for_moments = list(all_stats.keys()) if plot_all_portfolios else (['LS'] if 'LS' in all_stats else [])
+        
+        # Create distribution plots for each moment (showing distribution across all strategies by period)
+        moment_labels = {
+            'CAGR (%)': 'Rolling CAGR (%)',
+            'Variance': 'Rolling Variance',
+            'Skewness': 'Rolling Skewness',
+            'Kurtosis': 'Rolling Kurtosis'
+        }
+        
+        moment_folder_map = {
+            'CAGR (%)': 'Mean',
+            'Variance': 'Variance',
+            'Skewness': 'Skewness',
+            'Kurtosis': 'Kurtosis'
+        }
+        
+        # Determine which moments to plot
+        moments_to_plot_individual = []
+        if moment_distribution_level >= 1:
+            moments_to_plot_individual.append('CAGR (%)')
+        if moment_distribution_level >= 2:
+            moments_to_plot_individual.append('Variance')
+        if moment_distribution_level >= 3:
+            moments_to_plot_individual.append('Skewness')
+        if moment_distribution_level >= 4:
+            moments_to_plot_individual.append('Kurtosis')
+        
+        # Get rolling moments for all portfolios
+        all_portfolio_rolling_moments = {}
+        for port in portfolios_for_moments:
+            port_stats = all_stats[port]
+            portfolio_rolling_moments_by_period = {}
+            for period_name in periods_to_show:
+                if period_name in port_stats:
+                    period_returns = port_stats[period_name]['returns']
+                    rolling_moments = calculate_rolling_moments(period_returns, rolling_window_months)
+                    portfolio_rolling_moments_by_period[period_name] = rolling_moments
+            all_portfolio_rolling_moments[port] = portfolio_rolling_moments_by_period
+        
+        # Create one PNG per moment, with subplots for each portfolio
+        for moment in moments_to_plot_individual:
+            num_ports = len(portfolios_for_moments)
+            num_periods = len(periods_to_show)
+            
+            # Create subplots: rows = num_ports, cols = num_periods
+            plt.style.use("dark_background")
+            fig, axes = plt.subplots(num_ports, num_periods, figsize=(7*num_periods, 5.5*num_ports))
+            
+            # Handle axes indexing
+            if num_ports == 1 and num_periods == 1:
+                axes_array = np.array([[axes]], dtype=object)
+            elif num_ports == 1:
+                if not isinstance(axes, np.ndarray):
+                    axes_array = np.array([axes])
+                else:
+                    axes_array = axes.reshape(1, -1)
+            elif num_periods == 1:
+                if not isinstance(axes, np.ndarray):
+                    axes_array = np.array([[axes]], dtype=object)
+                else:
+                    axes_array = axes.reshape(-1, 1)
+            else:
+                axes_array = axes
+            
+            title_suffix_text = f" - {plot_title_suffix}" if plot_title_suffix else ""
+            fig.suptitle(f"{signal_to_test} - Distribution of {moment_labels[moment]} Across All Strategies{title_suffix_text}", 
+                         fontsize=16, color="white", y=0.995, ha='center')
+            
+            for port_idx, port in enumerate(portfolios_for_moments):
+                portfolio_rolling_moments_by_period = all_portfolio_rolling_moments[port]
+                
+                for period_idx, period_name in enumerate(periods_to_show):
+                    # Get the correct axis
+                    if num_ports == 1 and num_periods == 1:
+                        ax = axes_array[0, 0]
+                    elif num_ports == 1:
+                        ax = axes_array[0, period_idx]
+                    elif num_periods == 1:
+                        ax = axes_array[port_idx, 0]
+                    else:
+                        ax = axes_array[port_idx, period_idx]
+                    
+                    # Get distribution data for this period across all strategies
+                    period_key = period_name
+                    if period_key not in all_strategy_rolling_moments_by_period:
+                        # Try alternative period names
+                        if period_name == 'Out-of-Sample':
+                            period_key = 'Out-of-Sample'
+                        elif period_name == 'Post-Publication':
+                            period_key = 'Post-Publication'
+                    
+                    if period_key in all_strategy_rolling_moments_by_period:
+                        moment_data = all_strategy_rolling_moments_by_period[period_key][moment]
+                    else:
+                        moment_data = []
+                    
+                    # Get this portfolio's rolling values for this period (for highlighting distribution)
+                    if period_name in portfolio_rolling_moments_by_period:
+                        portfolio_rolling_values = portfolio_rolling_moments_by_period[period_name][moment].dropna().tolist()
+                    else:
+                        portfolio_rolling_values = []
+                    
+                    if len(moment_data) == 0:
+                        ax.text(0.5, 0.5, 'No data available', transform=ax.transAxes,
+                               ha='center', va='center', color='white', fontsize=12)
+                        ax.set_title(f"{port} - {period_name}", color="white", fontsize=11, pad=10)
+                        continue
+                    
+                    # Create histogram with portfolio-specific color
+                    port_color = color_map.get(port, 'white')
+                    n, bins, patches = ax.hist(moment_data, bins=30, color=port_color, 
+                                              alpha=0.7, edgecolor='white', linewidth=1)
+                    
+                    # Highlight this portfolio's rolling values distribution
+                    if len(portfolio_rolling_values) > 0:
+                        # Show mean of this portfolio's rolling values
+                        portfolio_mean = np.mean(portfolio_rolling_values)
+                        ax.axvline(portfolio_mean, color=port_color, linestyle='-', linewidth=3, 
+                                  label=f"{port} Mean: {portfolio_mean:.4f}", zorder=10)
+                        # Optionally show min/max range
+                        portfolio_min = np.min(portfolio_rolling_values)
+                        portfolio_max = np.max(portfolio_rolling_values)
+                        ax.axvspan(portfolio_min, portfolio_max, alpha=0.2, color=port_color, 
+                                  label=f"{port} Range: [{portfolio_min:.4f}, {portfolio_max:.4f}]")
+                    
+                    # Add vertical lines at mean and median of all strategies
+                    mean_val = np.mean(moment_data)
+                    median_val = np.median(moment_data)
+                    ax.axvline(mean_val, color='orange', linestyle='--', linewidth=2, 
+                              label=f"Mean: {mean_val:.4f}")
+                    ax.axvline(median_val, color='lime', linestyle='--', linewidth=2, 
+                              label=f"Median: {median_val:.4f}")
+                    
+                    # Calculate and display statistics
+                    std_val = np.std(moment_data)
+                    min_val = np.min(moment_data)
+                    max_val = np.max(moment_data)
+                    
+                    # Calculate additional statistics
+                    skewness_val = pd.Series(moment_data).skew() if len(moment_data) > 2 else 0
+                    kurtosis_val = pd.Series(moment_data).kurtosis() if len(moment_data) > 2 else 0
+                    
+                    stats_text = (
+                        f"Number of Strategies: {len(moment_data)}\n"
+                        f"Mean: {mean_val:.4f}\n"
+                        f"Median: {median_val:.4f}\n"
+                        f"Std Dev: {std_val:.4f}\n"
+                        f"Skewness: {skewness_val:.4f}\n"
+                        f"Kurtosis: {kurtosis_val:.4f}\n"
+                        f"Min: {min_val:.4f}\n"
+                        f"Max: {max_val:.4f}"
+                    )
+                    
+                    ax.set_title(f"{port} - {period_name}", color="white", fontsize=11, pad=10)
+                    ax.set_xlabel(moment_labels[moment], color="white")
+                    ax.set_ylabel("Frequency", color="white")
+                    ax.grid(True, linestyle="--", alpha=0.3)
+                    ax.legend(fontsize=8, loc='upper right')
+                    
+                    # Add statistics text box
+                    ax.text(0.02, 0.98, stats_text, transform=ax.transAxes,
+                           fontsize=8, verticalalignment='top',
+                           bbox=dict(boxstyle='round', facecolor='black', alpha=0.7, edgecolor='white'),
+                           color='white', family='monospace')
+            
+            plt.tight_layout(rect=[0, 0, 1, 0.96])
+            if num_ports == 1:
+                plt.subplots_adjust(top=0.90, wspace=0.3)
+            else:
+                plt.subplots_adjust(top=0.92, hspace=0.35, wspace=0.3)
+            
+            suffix_filename = f"_{plot_title_suffix.replace(' ', '_')}" if plot_title_suffix else ""
+            folder_name = moment_folder_map[moment]
+            output_path = os.path.join(OUTPUT_DISTRIBUTIONS_INDIVIDUAL_MOMENTS[folder_name], 
+                                      f"{signal_to_test}_{folder_name.lower()}_distribution{suffix_filename}.png")
+            plt.savefig(output_path)
+            print(f"  {moment_labels[moment]} distribution plot for {signal_to_test} saved to: {output_path}")
+            plt.close()
+
+    # ================================================================
     # STEP 7: BUILD ALIGNED SERIES FOR ROLLING PLOTS
     # ================================================================
     # Calculate rolling 5-year multiplicative growth and align by months since publication
@@ -844,3 +1359,233 @@ else:
         plt.savefig(output_path)
         plt.close()
         print(f"Saved: {output_path}")
+
+# ================================================================
+# CAGR DISTRIBUTION PLOT FOR ALL STRATEGIES
+# ================================================================
+print("\n" + "="*80)
+print("Generating CAGR distribution plot for all strategies...")
+print("="*80)
+
+if len(all_strategy_cagrs) > 0:
+    plt.style.use("dark_background")
+    fig, ax = plt.subplots(figsize=(12, 7))
+    
+    title_suffix_text = f" - {plot_title_suffix}" if plot_title_suffix else ""
+    fig.suptitle(f"Distribution of All Strategy CAGR Values{title_suffix_text}", 
+                 fontsize=16, color="white")
+    
+    # Create histogram
+    n, bins, patches = ax.hist(all_strategy_cagrs, bins=30, color='cyan', 
+                              alpha=0.7, edgecolor='white', linewidth=1)
+    
+    # Add vertical line at mean
+    mean_cagr = np.mean(all_strategy_cagrs)
+    median_cagr = np.median(all_strategy_cagrs)
+    ax.axvline(mean_cagr, color='yellow', linestyle='--', linewidth=2, 
+              label=f"Mean: {mean_cagr:.2f}%")
+    ax.axvline(median_cagr, color='lime', linestyle='--', linewidth=2, 
+              label=f"Median: {median_cagr:.2f}%")
+    
+    # Calculate and display statistics
+    std_cagr = np.std(all_strategy_cagrs)
+    min_cagr = np.min(all_strategy_cagrs)
+    max_cagr = np.max(all_strategy_cagrs)
+    
+    stats_text = (
+        f"Number of Strategies: {len(all_strategy_cagrs)}\n"
+        f"Mean: {mean_cagr:.2f}%\n"
+        f"Median: {median_cagr:.2f}%\n"
+        f"Std Dev: {std_cagr:.2f}%\n"
+        f"Min: {min_cagr:.2f}%\n"
+        f"Max: {max_cagr:.2f}%"
+    )
+    
+    ax.text(0.02, 0.98, stats_text, transform=ax.transAxes,
+           fontsize=11, verticalalignment='top',
+           bbox=dict(boxstyle='round', facecolor='black', alpha=0.7, edgecolor='white'),
+           color='white', family='monospace')
+    
+    ax.set_xlabel("CAGR (%)", color="white")
+    ax.set_ylabel("Frequency", color="white")
+    ax.set_title("Long-Short (LS) Portfolio CAGR Distribution", color="white")
+    ax.grid(True, linestyle="--", alpha=0.3)
+    ax.legend()
+    plt.tight_layout()
+    plt.subplots_adjust(top=0.93)
+    
+    suffix_filename = f"_{plot_title_suffix.replace(' ', '_')}" if plot_title_suffix else ""
+    output_path = os.path.join(OUTPUT_DISTRIBUTIONS_AGGREGATE, f"cagr_distribution{suffix_filename}.png")
+    plt.savefig(output_path)
+    print(f"CAGR distribution plot saved to: {output_path}")
+    plt.close()
+    
+    print(f"\n--- CAGR Distribution Statistics ---")
+    print(f"Number of Strategies: {len(all_strategy_cagrs)}")
+    print(f"Mean CAGR: {mean_cagr:.2f}%")
+    print(f"Median CAGR: {median_cagr:.2f}%")
+    print(f"Std Dev: {std_cagr:.2f}%")
+    print(f"Min CAGR: {min_cagr:.2f}%")
+    print(f"Max CAGR: {max_cagr:.2f}%")
+else:
+    print("No CAGR values available to create distribution plot.")
+
+# ================================================================
+# MOMENT DISTRIBUTION PLOTS FOR ALL STRATEGIES (AGGREGATE)
+# ================================================================
+if generate_moment_distributions:
+    print("\n" + "="*80)
+    print("Generating aggregate moment distribution plots for all strategies...")
+    print("="*80)
+    
+    # Define which moments to plot based on moment_distribution_level
+    moments_to_plot = []
+    moment_folder_map = {}  # Maps moment key to folder name
+    if moment_distribution_level >= 1:
+        moments_to_plot.append('CAGR (%)')
+        moment_folder_map['CAGR (%)'] = 'Mean'
+    if moment_distribution_level >= 2:
+        moments_to_plot.append('Variance')
+        moment_folder_map['Variance'] = 'Variance'
+    if moment_distribution_level >= 3:
+        moments_to_plot.append('Skewness')
+        moment_folder_map['Skewness'] = 'Skewness'
+    if moment_distribution_level >= 4:
+        moments_to_plot.append('Kurtosis')
+        moment_folder_map['Kurtosis'] = 'Kurtosis'
+    
+    # Moment labels and units
+    moment_labels = {
+        'CAGR (%)': 'CAGR (%)',
+        'Variance': 'Variance',
+        'Skewness': 'Skewness',
+        'Kurtosis': 'Kurtosis'
+    }
+    
+    # Determine which periods to show (same logic as individual plots)
+    # We need to check the backtesting mode - use the same logic as in the main loop
+    # For simplicity, we'll check if we have data for different periods
+    periods_to_show_aggregate = []
+    if 'Full Sample' in all_strategy_final_moments_by_period:
+        periods_to_show_aggregate.append('Full Sample')
+    if 'In-Sample' in all_strategy_final_moments_by_period:
+        if 'Out-of-Sample' in all_strategy_final_moments_by_period:
+            periods_to_show_aggregate = ['In-Sample', 'Out-of-Sample', 'Full Sample']
+        elif 'Post-Publication' in all_strategy_final_moments_by_period:
+            periods_to_show_aggregate = ['In-Sample', 'Post-Publication', 'Full Sample']
+        else:
+            periods_to_show_aggregate = ['In-Sample', 'Full Sample']
+    else:
+        periods_to_show_aggregate = ['Full Sample']
+    
+    # Create separate PNG for each moment
+    for moment in moments_to_plot:
+        # Check if we have data for any period
+        has_data = False
+        for period_name in periods_to_show_aggregate:
+            if period_name in all_strategy_final_moments_by_period:
+                if len(all_strategy_final_moments_by_period[period_name][moment]) > 0:
+                    has_data = True
+                    break
+        
+        if not has_data:
+            print(f"No data available for {moment_labels[moment]}")
+            continue
+        
+        plt.style.use("dark_background")
+        num_periods = len(periods_to_show_aggregate)
+        fig, axes = plt.subplots(1, num_periods, figsize=(7*num_periods, 6))
+        
+        # Handle axes indexing for single vs. multiple subplots
+        if num_periods == 1:
+            axes = [axes]
+        else:
+            axes = axes.flatten()
+        
+        title_suffix_text = f" - {plot_title_suffix}" if plot_title_suffix else ""
+        fig.suptitle(f"Distribution of {moment_labels[moment]} Across All Strategies (LS Only){title_suffix_text}", 
+                     fontsize=16, color="white", y=0.995, ha='center')
+        
+        for period_idx, period_name in enumerate(periods_to_show_aggregate):
+            ax = axes[period_idx]
+            
+            # Get moment data for this period
+            if period_name in all_strategy_final_moments_by_period:
+                moment_data = all_strategy_final_moments_by_period[period_name][moment]
+            else:
+                moment_data = []
+            
+            if len(moment_data) == 0:
+                ax.text(0.5, 0.5, 'No data available', transform=ax.transAxes,
+                       ha='center', va='center', color='white', fontsize=12)
+                ax.set_title(period_name, color="white", fontsize=12, pad=10)
+                continue
+            
+            # Create histogram
+            n, bins, patches = ax.hist(moment_data, bins=30, color='cyan', 
+                                      alpha=0.7, edgecolor='white', linewidth=1)
+            
+            # Add vertical lines at mean and median
+            mean_val = np.mean(moment_data)
+            median_val = np.median(moment_data)
+            ax.axvline(mean_val, color='yellow', linestyle='--', linewidth=2, 
+                      label=f"Mean: {mean_val:.4f}")
+            ax.axvline(median_val, color='lime', linestyle='--', linewidth=2, 
+                      label=f"Median: {median_val:.4f}")
+            
+            # Calculate and display statistics
+            std_val = np.std(moment_data)
+            min_val = np.min(moment_data)
+            max_val = np.max(moment_data)
+            
+            # Calculate additional statistics
+            skewness_val = pd.Series(moment_data).skew() if len(moment_data) > 2 else 0
+            kurtosis_val = pd.Series(moment_data).kurtosis() if len(moment_data) > 2 else 0
+            
+            stats_text = (
+                f"Number of Strategies: {len(moment_data)}\n"
+                f"Mean: {mean_val:.4f}\n"
+                f"Median: {median_val:.4f}\n"
+                f"Std Dev: {std_val:.4f}\n"
+                f"Skewness: {skewness_val:.4f}\n"
+                f"Kurtosis: {kurtosis_val:.4f}\n"
+                f"Min: {min_val:.4f}\n"
+                f"Max: {max_val:.4f}"
+            )
+            
+            ax.set_title(period_name, color="white", fontsize=12, pad=10)
+            ax.set_xlabel(moment_labels[moment], color="white")
+            ax.set_ylabel("Frequency", color="white")
+            ax.grid(True, linestyle="--", alpha=0.3)
+            ax.legend(fontsize=9)
+            
+            # Add statistics text box
+            ax.text(0.02, 0.98, stats_text, transform=ax.transAxes,
+                   fontsize=9, verticalalignment='top',
+                   bbox=dict(boxstyle='round', facecolor='black', alpha=0.7, edgecolor='white'),
+                   color='white', family='monospace')
+        
+        plt.tight_layout(rect=[0, 0, 1, 0.96])
+        if num_periods == 1:
+            plt.subplots_adjust(top=0.90, wspace=0.3)
+        else:
+            plt.subplots_adjust(top=0.92, wspace=0.3)
+        
+        suffix_filename = f"_{plot_title_suffix.replace(' ', '_')}" if plot_title_suffix else ""
+        folder_name = moment_folder_map[moment]
+        output_path = os.path.join(OUTPUT_DISTRIBUTIONS_AGGREGATE_MOMENTS[folder_name], 
+                                  f"{folder_name.lower()}_distribution{suffix_filename}.png")
+        plt.savefig(output_path)
+        print(f"  {moment_labels[moment]} distribution plot saved to: {output_path}")
+        plt.close()
+        
+        # Print statistics
+        print(f"\n--- {moment_labels[moment]} Distribution Statistics ---")
+        print(f"  Number of Strategies: {len(moment_data)}")
+        print(f"  Mean: {mean_val:.4f}")
+        print(f"  Median: {median_val:.4f}")
+        print(f"  Std Dev: {std_val:.4f}")
+        print(f"  Min: {min_val:.4f}")
+        print(f"  Max: {max_val:.4f}")
+else:
+    print("\nMoment distribution plots are disabled (generate_moment_distributions = False).")

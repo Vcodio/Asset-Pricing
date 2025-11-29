@@ -36,3 +36,20 @@ Thumbs.db
 # Analysis results - keep CSV, TXT, MD but exclude PNG
 # PNG files are already excluded by *.png above
 
+# Exclude generated output folders from Peer Review Analysis script
+# These are regenerated each run and don't need to be version controlled
+Peer Reviewed Research/Output/
+Peer Reviewed Research/*/backtest_plots/
+Peer Reviewed Research/*/trailing_cagr_plots/
+Peer Reviewed Research/*/raw_returns/
+Peer Reviewed Research/*/summary_plots/
+Peer Reviewed Research/*/rolling_plots/
+Peer Reviewed Research/*/Distributions/
+# Also exclude old output folders (before folder organization)
+Peer Reviewed Research/backtest_plots/
+Peer Reviewed Research/trailing_cagr_plots/
+Peer Reviewed Research/raw_returns/
+Peer Reviewed Research/summary_plots/
+Peer Reviewed Research/rolling_plots/
+Peer Reviewed Research/Distributions/
+
