@@ -1,0 +1,846 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from pandas_datareader import data as web
+import datetime
+import os
+import warnings
+
+# ================================================================
+# USER INPUT
+# ================================================================
+# Change this to a list of any signals in your CSV you want to test
+# This list is used if 'test_all_strategies' is set to False
+signals_to_test = ["Beta", "CoskewACX","GP","OperProf","OperProfRD", "ShortInterest"
+]
+
+# NEW TOGGLE TO TEST ALL STRATEGIES
+# Set to True to automatically test all unique signals found in PredictorPortsFull.csv
+# This will override the signals_to_test list above.
+# Set to False to use the specific signals in the list above.
+test_all_strategies = True
+
+# NEW SETTING FOR BAR GRAPH PLOTS
+# If testing a large number of strategies, this will split the final bar graph
+# into multiple plots, each containing this many strategies.
+strategies_per_plot = 25
+
+# TOGGLE FOR DATE LOADING
+# Set to True to automatically load in-sample dates from PredictorSummary.csv
+# Set to False to manually specify your own dates below
+auto_load_dates = True
+
+# MANUALLY SPECIFY DATES IF auto_load_dates IS False
+manual_start_year = 2003
+manual_end_year = 2023
+
+# TOGGLE FOR PRE-PUBLICATION OOS
+# Set to True to include a pre-sample period for backtesting.
+run_pre_sample = True
+
+# NEW SETTING FOR DYNAMIC PRE-SAMPLE PERIOD
+# Set to True to use ALL available historical data before the in-sample period.
+# This overrides any manual pre-sample date settings from a previous version.
+run_pre_sample_all_data = True
+
+# MINIMUM PRE-PUBLICATION PERIOD
+# Strategies with pre-sample data less than this value will be skipped from the analysis.
+min_pre_sample_years = 5
+
+# TOGGLE FOR FULL SAMPLE BACKTEST
+# Set to True to run a single, full-sample backtest with no out-of-sample split.
+# This will override run_pre_sample and auto_load_dates.
+run_full_sample = False
+
+# TITLE SUFFIX FOR PLOTS
+# This will be prompted at runtime - see below
+
+# Define the file paths for your data
+# Get the directory where this script is located
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PREDICTOR_PORTS_FILE = os.path.join(SCRIPT_DIR, "PredictorPortsFull.csv")
+PREDICTOR_SUMMARY_FILE = os.path.join(SCRIPT_DIR, "PredictorSummary.csv")
+
+# Create output directories
+OUTPUT_BACKTEST = os.path.join(SCRIPT_DIR, "backtest_plots")
+OUTPUT_TRAILING_CAGR = os.path.join(SCRIPT_DIR, "trailing_cagr_plots")
+OUTPUT_RAW_RETURNS = os.path.join(SCRIPT_DIR, "raw_returns")
+OUTPUT_SUMMARY = os.path.join(SCRIPT_DIR, "summary_plots")
+OUTPUT_ROLLING = os.path.join(SCRIPT_DIR, "rolling_plots")
+
+# Create directories if they don't exist
+for output_dir in [OUTPUT_BACKTEST, OUTPUT_TRAILING_CAGR, OUTPUT_RAW_RETURNS, OUTPUT_SUMMARY, OUTPUT_ROLLING]:
+    os.makedirs(output_dir, exist_ok=True)
+
+# ================================================================
+# PROMPT FOR PLOT TITLE SUFFIX
+# ================================================================
+print("\n" + "="*80)
+print("PLOT TITLE SUFFIX")
+print("="*80)
+print("Enter a suffix to add to all plot titles (e.g., 'Momentum', 'Value Strategies', etc.)")
+print("Type 'NONE' or press Enter to skip adding a suffix.")
+suffix_input = input("Plot title suffix: ").strip()
+
+# Process the input: if NONE, empty, or just whitespace, set to empty string
+if suffix_input.upper() == "NONE" or suffix_input == "":
+    plot_title_suffix = ""
+    print("No suffix will be added to plot titles.")
+else:
+    plot_title_suffix = suffix_input
+    print(f"Plot titles will include: '{plot_title_suffix}'")
+print("="*80 + "\n")
+
+# ================================================================
+# CAGR FUNCTION
+# ================================================================
+def calculate_cagr(returns):
+    """Calculates the Compound Annual Growth Rate (CAGR) from a series of monthly returns."""
+    if returns.empty:
+        return np.nan
+    returns = returns / 100.0
+    backtest_series = (1 + returns).cumprod()
+    num_years = len(returns) / 12
+    if num_years <= 0:
+        return np.nan
+    final_value = backtest_series.iloc[-1]
+    if final_value <= 0:
+        return np.nan
+    return ((final_value ** (1 / num_years)) - 1) * 100
+
+# ================================================================
+# STEP 1: DATA LOADING
+# ================================================================
+print(f"Loading data from '{PREDICTOR_PORTS_FILE}'...")
+try:
+    df = pd.read_csv(PREDICTOR_PORTS_FILE)
+    required_cols = ['date', 'signalname', 'port', 'ret']
+    if not all(col in df.columns for col in required_cols):
+        raise ValueError(f"CSV file is missing one or more required columns: {required_cols}")
+except FileNotFoundError:
+    print(f"\nERROR: '{PREDICTOR_PORTS_FILE}' not found.")
+    exit()
+except Exception as e:
+    print(f"\nAn error occurred while loading the CSV file: {e}")
+    exit()
+
+# Filter for the signals we're interested in
+if test_all_strategies:
+    print("Testing all strategies found in the data.")
+    signals_to_test = df['signalname'].unique().tolist()
+    df_subset = df.copy()
+else:
+    print(f"Testing a subset of strategies: {signals_to_test}")
+    df_subset = df[df['signalname'].isin(signals_to_test)].copy()
+
+if df_subset.empty:
+    print(f"\nERROR: No data found for any of the signals. Check spelling or file contents.")
+    exit()
+print(f"Data for {len(signals_to_test)} signals loaded successfully.")
+
+# Storage for all LS results for the final summary graph
+ls_cagr_results = []
+
+# Storage for rolling 5-year growth aligned by months since publication
+aligned_series = {}
+
+# ================================================================
+# CACHE FAMA-FRENCH DATA (Download once before loop)
+# ================================================================
+# Determine the date range needed for all signals
+df_subset_dates = df_subset.copy()
+df_subset_dates["date"] = pd.to_datetime(df_subset_dates["date"])
+global_ff_start = df_subset_dates['date'].min()
+global_ff_end = df_subset_dates['date'].max()
+
+print(f"\nCaching Fama-French data for date range: {global_ff_start.strftime('%Y-%m')} to {global_ff_end.strftime('%Y-%m')}...")
+
+# Create cache directory for Fama-French data
+ff_cache_dir = os.path.join(SCRIPT_DIR, "ff_cache")
+os.makedirs(ff_cache_dir, exist_ok=True)
+ff_cache_file = os.path.join(ff_cache_dir, f"F-F_Research_Data_Factors_{global_ff_start.strftime('%Y%m')}_{global_ff_end.strftime('%Y%m')}.csv")
+
+# Try to load from cache
+if os.path.exists(ff_cache_file):
+    try:
+        print("Loading Fama-French data from cache...")
+        ff_cache_df = pd.read_csv(ff_cache_file, index_col=0, parse_dates=[0])
+        print("Fama-French data loaded from cache successfully.")
+    except Exception as e:
+        print(f"Cache file corrupted. Re-downloading... Error: {e}")
+        ff_cache_df = None
+else:
+    ff_cache_df = None
+
+# Download if cache doesn't exist or is corrupted
+if ff_cache_df is None:
+    print("Downloading Fama-French data...")
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=FutureWarning)
+        ff_downloaded = web.DataReader('F-F_Research_Data_Factors', 'famafrench', start=global_ff_start, end=global_ff_end)[0]
+    ff_downloaded.index = ff_downloaded.index.to_timestamp()
+    ff_downloaded.index.name = 'Date'
+    ff_cache_df = ff_downloaded
+    # Save to cache
+    ff_cache_df.to_csv(ff_cache_file)
+    print("Fama-French data downloaded and cached successfully.")
+
+# Create a function to get CRSP market returns from cached data
+def get_crsp_market_returns(start_date, end_date):
+    """Get CRSP value-weighted market returns from cached Fama-French data."""
+    crsp_returns = (ff_cache_df['Mkt-RF'] + ff_cache_df['RF']).loc[start_date:end_date]
+    crsp_df = crsp_returns.to_frame('monthly_ret_pct')
+    crsp_df.index = pd.to_datetime(crsp_df.index)
+    return crsp_df
+
+# ================================================================
+# MAIN LOOP FOR EACH SIGNAL
+# ================================================================
+for signal_to_test in signals_to_test:
+    print("\n" + "="*80)
+    print(f"Processing signal: {signal_to_test}")
+    print("="*80)
+
+    signal_df = df_subset[df_subset['signalname'] == signal_to_test].copy()
+
+    # Check if this signal has the LS portfolio
+    if 'LS' not in signal_df['port'].unique():
+        print(f"WARNING: No 'LS' portfolio found for signal '{signal_to_test}'. Skipping this signal in the final summary graph.")
+        continue
+
+    # ================================================================
+    # STEP 1.5: DEFINE IN-SAMPLE & OOS DATES
+    # ================================================================
+    if run_full_sample:
+        print("\nRunning full-sample backtest. All other splits are disabled.")
+        signal_df["date"] = pd.to_datetime(signal_df["date"])
+        start_date_full = signal_df['date'].min()
+        end_date_full = signal_df['date'].max()
+        pre_sample_start_date = None
+        pre_sample_end_date = None
+        sample_start_date = start_date_full
+        sample_end_date = end_date_full
+        out_of_sample_start_date = end_date_full + pd.Timedelta(days=1)
+
+    else:
+        # Define in-sample dates
+        if auto_load_dates:
+            print(f"\nAutomatically loading in-sample years from '{PREDICTOR_SUMMARY_FILE}'...")
+            try:
+                summary_df = pd.read_csv(PREDICTOR_SUMMARY_FILE)
+                summary_cols = ['signalname', 'SampleStartYear', 'SampleEndYear']
+                if not all(col in summary_df.columns for col in summary_cols):
+                    raise ValueError(f"CSV file is missing one or more required columns: {summary_cols}")
+            except FileNotFoundError:
+                print(f"\nERROR: '{PREDICTOR_SUMMARY_FILE}' not found.")
+                exit()
+            except Exception as e:
+                print(f"\nAn error occurred while loading the summary file: {e}")
+                exit()
+
+            signal_summary = summary_df[summary_df['signalname'] == signal_to_test]
+            if signal_summary.empty:
+                print(f"\nERROR: Signal '{signal_to_test}' not found in '{PREDICTOR_SUMMARY_FILE}'.")
+                continue
+
+            start_year = int(signal_summary['SampleStartYear'].iloc[0])
+            end_year = int(signal_summary['SampleEndYear'].iloc[0])
+        else:
+            start_year = manual_start_year
+            end_year = manual_end_year
+            print(f"\nManually specified in-sample period: {start_year} to {end_year}")
+
+        sample_start_date = pd.to_datetime(f"{start_year}-01-01")
+        sample_end_date = pd.to_datetime(f"{end_year}-12-31")
+        out_of_sample_start_date = sample_end_date + pd.Timedelta(days=1)
+
+        # New dynamic pre-sample date logic
+        if run_pre_sample and run_pre_sample_all_data:
+            signal_df["date"] = pd.to_datetime(signal_df["date"])
+            pre_sample_start_date = signal_df['date'].min()
+            pre_sample_end_date = sample_start_date - pd.Timedelta(days=1)
+
+            # CHECK FOR MINIMUM PRE-SAMPLE PERIOD
+            pre_sample_duration = (pre_sample_end_date - pre_sample_start_date).days / 365.25
+            if pre_sample_duration < min_pre_sample_years:
+                print(f"WARNING: Pre-sample period for '{signal_to_test}' is only {pre_sample_duration:.2f} years. Skipping because it is less than the minimum required {min_pre_sample_years} years.")
+                continue
+
+            print(f"Using all available data for pre-sample period: {pre_sample_start_date.strftime('%Y-%m')} to {pre_sample_end_date.strftime('%Y-%m')}")
+
+            # CHECK FOR NaN VALUES AND SKIP STRATEGY
+            pre_sample_data = signal_df[(signal_df['date'] >= pre_sample_start_date) & (signal_df['date'] <= pre_sample_end_date)]
+            if pre_sample_data.empty:
+                print(f"WARNING: No data available for the pre-sample period for '{signal_to_test}'. Skipping.")
+                continue
+
+            ls_pre_sample_data = pre_sample_data[pre_sample_data['port'] == 'LS']
+            if ls_pre_sample_data['ret'].isnull().any():
+                print(f"WARNING: Found NaN values in the Long-Short portfolio for signal '{signal_to_test}' during the pre-sample period. Skipping this strategy.")
+                continue
+
+        else:
+            pre_sample_start_date = None
+            pre_sample_end_date = None
+
+    # ================================================================
+    # STEP 2: PREPARE SIGNAL DATA
+    # ================================================================
+    signal_df["date"] = pd.to_datetime(signal_df["date"])
+    signal_df = signal_df.sort_values("date")
+    signal_df["ret_pct"] = signal_df["ret"]
+
+    start_date = signal_df['date'].min()
+    end_date = signal_df['date'].max()
+    print(f"Data starts on: {start_date.strftime('%Y-%m')} and ends on: {end_date.strftime('%Y-%m')}")
+
+    # Check if the data range covers the specified periods
+    if pre_sample_start_date and start_date > pre_sample_start_date:
+        print(f"WARNING: Pre-sample period start date ({pre_sample_start_date.strftime('%Y-%m')}) is before data start date ({start_date.strftime('%Y-%m')}). Using data start date instead.")
+        pre_sample_start_date = start_date
+    if start_date > sample_start_date:
+         print(f"WARNING: In-sample period start date ({sample_start_date.strftime('%Y-%m')}) is before data start date ({start_date.strftime('%Y-%m')}). Using data start date instead.")
+         sample_start_date = start_date
+    if end_date < out_of_sample_start_date:
+        print(f"WARNING: No data available for the out-of-sample period. The data ends before the out-of-sample period begins.")
+
+    # ================================================================
+    # STEP 3: GET CRSP MARKET RETURNS (from cached Fama-French data)
+    # ================================================================
+    ff_start_date = pre_sample_start_date if pre_sample_start_date else start_date
+    ff_end_date = end_date
+    crsp_market_df = get_crsp_market_returns(ff_start_date, ff_end_date)
+
+    # ================================================================
+    # STEP 4: CALCULATE CUMULATIVE RETURNS
+    # ================================================================
+    # Pivot the signal data to have separate columns for each portfolio's returns
+    portfolio_returns = signal_df.pivot(index="date", columns="port", values="ret_pct")
+
+    # Calculate the cumulative returns for each portfolio
+    cumulative_returns = (1 + portfolio_returns / 100).cumprod()
+
+    # Calculate cumulative returns for the CRSP Market
+    crsp_market_cumulative_returns = (1 + crsp_market_df['monthly_ret_pct'] / 100).cumprod()
+
+    # ================================================================
+    # STEP 5: PLOTTING CUMULATIVE RETURNS (MODIFIED FOR 3 PANELS)
+    # ================================================================
+    plt.style.use("dark_background")
+    special_colors = {'LS': 'cyan', '1': 'yellow', '2': 'magenta', '3': 'lime'}
+    unique_ports = signal_df['port'].unique()
+    extra_ports = [p for p in unique_ports if p not in special_colors]
+    cmap = plt.get_cmap('tab10')
+    auto_colors = {p: cmap(i % 10) for i, p in enumerate(sorted(extra_ports))}
+    color_map = {**special_colors, **auto_colors}
+
+    if run_full_sample:
+        fig, ax = plt.subplots(1, 1, figsize=(12, 7))
+        fig.suptitle(f"Full-Sample Cumulative Returns: {signal_to_test} vs. CRSP Market (Logarithmic Scale)", fontsize=16, color="white")
+
+        cumulative_returns_norm = cumulative_returns / cumulative_returns.iloc[0]
+        crsp_market_cumulative_returns_norm = crsp_market_cumulative_returns / crsp_market_cumulative_returns.iloc[0]
+
+        for port in cumulative_returns_norm.columns:
+            ax.plot(cumulative_returns_norm.index, cumulative_returns_norm[port], label=f"{signal_to_test} {port}", color=color_map.get(port, 'white'))
+        ax.plot(crsp_market_cumulative_returns_norm.index, crsp_market_cumulative_returns_norm, label="CRSP Market", color="orange", linestyle='--')
+        ax.set_title("Full Sample Period", color="white")
+        ax.set_xlabel("Date", color="white")
+        ax.set_ylabel("Cumulative Return (Normalized)", color="white")
+        ax.legend()
+        ax.grid(True, linestyle="--", alpha=0.4)
+        ax.set_yscale('log')
+        plt.tight_layout()
+        plt.subplots_adjust(top=0.88)
+        output_path = os.path.join(OUTPUT_BACKTEST, f"backtest_full_sample_plot_{signal_to_test}.png")
+        plt.savefig(output_path)
+        print(f"Backtest plot saved to: {output_path}")
+        plt.close()
+
+    elif run_pre_sample and run_pre_sample_all_data:
+        fig, axes = plt.subplots(1, 3, figsize=(24, 7))
+        fig.suptitle(f"Cumulative Returns Backtest: {signal_to_test} vs. CRSP Market (Logarithmic Scale)", fontsize=16, color="white")
+
+        # Pre-Sample Plot
+        pre_sample_returns = cumulative_returns[cumulative_returns.index >= pre_sample_start_date]
+        pre_sample_returns = pre_sample_returns[pre_sample_returns.index <= pre_sample_end_date]
+        pre_sample_crsp_market = crsp_market_cumulative_returns[crsp_market_cumulative_returns.index >= pre_sample_start_date]
+        pre_sample_crsp_market = pre_sample_crsp_market[pre_sample_crsp_market.index <= pre_sample_end_date]
+        if not pre_sample_returns.empty:
+            pre_sample_returns_norm = pre_sample_returns / pre_sample_returns.iloc[0]
+            pre_sample_crsp_market_norm = pre_sample_crsp_market / pre_sample_crsp_market.iloc[0]
+            for port in pre_sample_returns_norm.columns:
+                axes[0].plot(pre_sample_returns_norm.index, pre_sample_returns_norm[port], label=f"{signal_to_test} {port}", color=color_map.get(port, 'white'))
+            axes[0].plot(pre_sample_crsp_market_norm.index, pre_sample_crsp_market_norm, label="CRSP Market", color="orange", linestyle='--')
+        axes[0].set_title("Pre-Publication Period", color="white")
+        axes[0].set_xlabel("Date", color="white")
+        axes[0].set_ylabel("Cumulative Return (Normalized)", color="white")
+        axes[0].legend()
+        axes[0].grid(True, linestyle="--", alpha=0.4)
+        axes[0].set_yscale('log')
+        axes[0].axvline(pre_sample_end_date, color='lime', linestyle='--', linewidth=1, label="Pre-Publication End")
+        axes[0].legend()
+
+        # In-Sample Plot
+        in_sample_returns = cumulative_returns[cumulative_returns.index > pre_sample_end_date]
+        in_sample_returns = in_sample_returns[in_sample_returns.index <= sample_end_date]
+        in_sample_crsp_market = crsp_market_cumulative_returns[crsp_market_cumulative_returns.index > pre_sample_end_date]
+        in_sample_crsp_market = in_sample_crsp_market[in_sample_crsp_market.index <= sample_end_date]
+        if not in_sample_returns.empty:
+            in_sample_returns_norm = in_sample_returns / in_sample_returns.iloc[0]
+            in_sample_crsp_market_norm = in_sample_crsp_market / in_sample_crsp_market.iloc[0]
+            for port in in_sample_returns_norm.columns:
+                axes[1].plot(in_sample_returns_norm.index, in_sample_returns_norm[port], label=f"{signal_to_test} {port}", color=color_map.get(port, 'white'))
+            axes[1].plot(in_sample_crsp_market_norm.index, in_sample_crsp_market_norm, label="CRSP Market", color="orange", linestyle='--')
+        axes[1].set_title("In-Sample Period", color="white")
+        axes[1].set_xlabel("Date", color="white")
+        axes[1].set_ylabel("Cumulative Return (Normalized)", color="white")
+        axes[1].legend()
+        axes[1].grid(True, linestyle="--", alpha=0.4)
+        axes[1].set_yscale('log')
+        axes[1].axvline(sample_end_date, color='lime', linestyle='--', linewidth=1, label="In-Sample End")
+        axes[1].legend()
+
+        # Out-of-Sample Plot
+        out_of_sample_returns = cumulative_returns[cumulative_returns.index >= out_of_sample_start_date]
+        out_of_sample_crsp_market = crsp_market_cumulative_returns[crsp_market_cumulative_returns.index >= out_of_sample_start_date]
+        if not out_of_sample_returns.empty:
+            out_of_sample_returns_norm = out_of_sample_returns / out_of_sample_returns.iloc[0]
+            out_of_sample_crsp_market_norm = out_of_sample_crsp_market / out_of_sample_crsp_market.iloc[0]
+            for port in out_of_sample_returns_norm.columns:
+                axes[2].plot(out_of_sample_returns_norm.index, out_of_sample_returns_norm[port], label=f"{signal_to_test} {port}", color=color_map.get(port, 'white'))
+            axes[2].plot(out_of_sample_crsp_market_norm.index, out_of_sample_crsp_market_norm, label="CRSP Market", color="orange", linestyle='--')
+        axes[2].set_title("Post-Publication Period", color="white")
+        axes[2].set_xlabel("Date", color="white")
+        axes[2].set_ylabel("Cumulative Return (Normalized)", color="white")
+        axes[2].legend()
+        axes[2].grid(True, linestyle="--", alpha=0.4)
+        axes[2].set_yscale('log')
+
+        plt.tight_layout()
+        plt.subplots_adjust(top=0.88)
+        output_path = os.path.join(OUTPUT_BACKTEST, f"backtest_plot_{signal_to_test}.png")
+        plt.savefig(output_path)
+        print(f"Backtest plot saved to: {output_path}")
+        plt.close()
+
+    else: # Existing in-sample / out-of-sample plot logic
+        fig, axes = plt.subplots(1, 2, figsize=(18, 7))
+        fig.suptitle(f"Cumulative Returns Backtest: {signal_to_test} vs. CRSP Market (Logarithmic Scale)", fontsize=16, color="white")
+
+        in_sample_returns = cumulative_returns[cumulative_returns.index <= sample_end_date]
+        in_sample_crsp_market = crsp_market_cumulative_returns[crsp_market_cumulative_returns.index <= sample_end_date]
+        if not in_sample_returns.empty:
+            in_sample_returns_norm = in_sample_returns / in_sample_returns.iloc[0]
+            in_sample_crsp_market_norm = in_sample_crsp_market / in_sample_crsp_market.iloc[0]
+            for port in in_sample_returns_norm.columns:
+                axes[0].plot(in_sample_returns_norm.index, in_sample_returns_norm[port], label=f"{signal_to_test} {port}", color=color_map.get(port, 'white'))
+            axes[0].plot(in_sample_crsp_market_norm.index, in_sample_crsp_market_norm, label="CRSP Market", color="orange", linestyle='--')
+        axes[0].set_title("In-Sample Period", color="white")
+        axes[0].set_xlabel("Date", color="white")
+        axes[0].set_ylabel("Cumulative Return (Normalized)", color="white")
+        axes[0].legend()
+        axes[0].grid(True, linestyle="--", alpha=0.4)
+        axes[0].set_yscale('log')
+
+        out_of_sample_returns = cumulative_returns[cumulative_returns.index >= out_of_sample_start_date]
+        out_of_sample_crsp_market = crsp_market_cumulative_returns[crsp_market_cumulative_returns.index >= out_of_sample_start_date]
+        if not out_of_sample_returns.empty:
+            out_of_sample_returns_norm = out_of_sample_returns / out_of_sample_returns.iloc[0]
+            out_of_sample_crsp_market_norm = out_of_sample_crsp_market / out_of_sample_crsp_market.iloc[0]
+            for port in out_of_sample_returns_norm.columns:
+                axes[1].plot(out_of_sample_returns_norm.index, out_of_sample_returns_norm[port], label=f"{signal_to_test} {port}", color=color_map.get(port, 'white'))
+            axes[1].plot(out_of_sample_crsp_market_norm.index, out_of_sample_crsp_market_norm, label="CRSP Market", color="orange", linestyle='--')
+        axes[1].set_title("Out-of-Sample Period", color="white")
+        axes[1].set_xlabel("Date", color="white")
+        axes[1].set_ylabel("Cumulative Return (Normalized)", color="white")
+        axes[1].legend()
+        axes[1].grid(True, linestyle="--", alpha=0.4)
+        axes[1].set_yscale('log')
+
+        plt.tight_layout()
+        plt.subplots_adjust(top=0.88)
+        output_path = os.path.join(OUTPUT_BACKTEST, f"backtest_plot_{signal_to_test}.png")
+        plt.savefig(output_path)
+        print(f"Backtest plot saved to: {output_path}")
+        plt.close()
+
+    # ================================================================
+    # STEP 5.5: PLOTTING ROLLING 5-YEAR RETURNS (CONTINUOUS) (MODIFIED)
+    # ================================================================
+    print("Generating rolling 5-year return plot...")
+
+    def calculate_rolling_cagr(returns_series, window_size=60):
+        """Calculates the rolling CAGR over a specified window."""
+        decimal_returns = returns_series / 100.0
+        cumulative_prod = (1 + decimal_returns).rolling(window=window_size).apply(np.prod, raw=True)
+        cagr = (cumulative_prod ** (12 / window_size) - 1) * 100
+        return cagr
+
+    portfolio_rolling_cagr = portfolio_returns.apply(calculate_rolling_cagr)
+    crsp_market_rolling_cagr = calculate_rolling_cagr(crsp_market_df['monthly_ret_pct'])
+
+    fig, ax = plt.subplots(figsize=(12, 7))
+    if run_full_sample:
+        fig.suptitle(f"Trailing 5-Year CAGR: {signal_to_test} vs. CRSP Market (Full Sample)", fontsize=16, color="white")
+        ax.set_title("Entire Backtesting Period", color="white")
+    else:
+        fig.suptitle(f"Trailing 5-Year CAGR: {signal_to_test} vs. CRSP Market (Continuous Plot)", fontsize=16, color="white")
+        if run_pre_sample and run_pre_sample_all_data:
+            ax.axvline(x=pre_sample_end_date, color='grey', linestyle=':', linewidth=2)
+            ax.axvline(x=out_of_sample_start_date, color='grey', linestyle=':', linewidth=2)
+            # Note: ylim values will be set after plotting, so we'll position text after plotting
+        else:
+            ax.axvline(x=out_of_sample_start_date, color='grey', linestyle=':', linewidth=2, label='In-Sample End')
+
+
+    for port in portfolio_rolling_cagr.columns:
+        ax.plot(portfolio_rolling_cagr.index, portfolio_rolling_cagr[port], label=f"{signal_to_test} {port}", color=color_map.get(port, 'white'))
+    ax.plot(crsp_market_rolling_cagr.index, crsp_market_rolling_cagr, label="CRSP Market", color="orange", linestyle='--')
+
+    # Add text labels after plotting so we can get ylim values
+    if not run_full_sample and run_pre_sample and run_pre_sample_all_data:
+        y_top = ax.get_ylim()[1]
+        ax.text(pre_sample_end_date, y_top * 0.9, 'Pre-Publication End', color='white', ha='right', fontsize=9)
+        ax.text(out_of_sample_start_date, y_top * 0.9, 'In-Sample End', color='white', ha='left', fontsize=9)
+
+    ax.set_xlabel("Date", color="white")
+    ax.set_ylabel("Trailing 5-Year CAGR (%)", color="white")
+    ax.legend()
+    ax.grid(True, linestyle="--", alpha=0.4)
+    plt.tight_layout()
+    plt.subplots_adjust(top=0.88)
+
+    if run_full_sample:
+        output_path = os.path.join(OUTPUT_TRAILING_CAGR, f"trailing_cagr_{signal_to_test}.png")
+        plt.savefig(output_path)
+        print(f"Full sample rolling 5-year return plot saved to: {output_path}")
+    else:
+        output_path = os.path.join(OUTPUT_TRAILING_CAGR, f"trailing_cagr_{signal_to_test}.png")
+        plt.savefig(output_path)
+        print(f"Continuous rolling 5-year return plot saved to: {output_path}")
+
+    plt.close()
+
+    # ================================================================
+    # STEP 6: PERFORMANCE TABLE (MODIFIED)
+    # ================================================================
+    if run_full_sample:
+        print(f"\n--- Full Sample Performance (Annual CAGR) for {signal_to_test} ---")
+        print(f"Period: {sample_start_date.strftime('%Y-%m')} → {sample_end_date.strftime('%Y-%m')}")
+        full_sample_cagr = signal_df.groupby('port')['ret'].apply(calculate_cagr)
+        full_sample_crsp_market = crsp_market_df[(crsp_market_df.index >= sample_start_date) & (crsp_market_df.index <= sample_end_date)]
+        full_sample_crsp_market_cagr = calculate_cagr(full_sample_crsp_market['monthly_ret_pct'])
+        performance_df = pd.DataFrame({'Full Sample CAGR (%)': full_sample_cagr})
+        crsp_market_row = pd.DataFrame({'Full Sample CAGR (%)': [full_sample_crsp_market_cagr]}, index=['CRSP Market'])
+        performance_df = pd.concat([performance_df, crsp_market_row])
+        print(performance_df.round(2).to_string())
+
+    elif run_pre_sample and run_pre_sample_all_data:
+        print(f"\n--- Multi-Period Performance (Annual CAGR) for {signal_to_test} ---")
+        print(f"Pre-Publication: {pre_sample_start_date.strftime('%Y-%m')} → {pre_sample_end_date.strftime('%Y-%m')}")
+        print(f"In-Sample: {sample_start_date.strftime('%Y-%m')} → {sample_end_date.strftime('%Y-%m')}")
+        print(f"Post-Publication: {out_of_sample_start_date.strftime('%Y-%m')} → {end_date.strftime('%Y-%m')}")
+
+        pre_sample_signal = signal_df[(signal_df['date'] >= pre_sample_start_date) & (signal_df['date'] <= pre_sample_end_date)]
+        in_sample_signal = signal_df[(signal_df['date'] > pre_sample_end_date) & (signal_df['date'] <= sample_end_date)]
+        out_of_sample_signal = signal_df[signal_df['date'] >= out_of_sample_start_date]
+
+        pre_sample_crsp_market = crsp_market_df[(crsp_market_df.index >= pre_sample_start_date) & (crsp_market_df.index <= pre_sample_end_date)]
+        in_sample_crsp_market = crsp_market_df[(crsp_market_df.index > pre_sample_end_date) & (crsp_market_df.index <= sample_end_date)]
+        out_of_sample_crsp_market = crsp_market_df[crsp_market_df.index >= out_of_sample_start_date]
+
+        pre_sample_cagr = pre_sample_signal.groupby('port')['ret'].apply(calculate_cagr)
+        in_sample_cagr = in_sample_signal.groupby('port')['ret'].apply(calculate_cagr)
+        out_of_sample_cagr = out_of_sample_signal.groupby('port')['ret'].apply(calculate_cagr)
+
+        pre_sample_crsp_market_cagr = calculate_cagr(pre_sample_crsp_market['monthly_ret_pct'])
+        in_sample_crsp_market_cagr = calculate_cagr(in_sample_crsp_market['monthly_ret_pct'])
+        out_of_sample_crsp_market_cagr = calculate_cagr(out_of_sample_crsp_market['monthly_ret_pct'])
+
+        performance_df = pd.DataFrame({
+            'Pre-Publication CAGR (%)': pre_sample_cagr,
+            'In-Sample CAGR (%)': in_sample_cagr,
+            'Post-Publication CAGR (%)': out_of_sample_cagr
+        })
+        crsp_market_row = pd.DataFrame({
+            'Pre-Publication CAGR (%)': [pre_sample_crsp_market_cagr],
+            'In-Sample CAGR (%)': [in_sample_crsp_market_cagr],
+            'Post-Publication CAGR (%)': [out_of_sample_crsp_market_cagr]
+        }, index=['CRSP Market'])
+        performance_df = pd.concat([performance_df, crsp_market_row])
+        print(performance_df.round(2).to_string())
+
+        # Store results for the final summary graph
+        ls_cagr_results.append({
+            'signal': signal_to_test,
+            'Pre-Publication CAGR': pre_sample_cagr.get('LS', np.nan),
+            'In-Sample CAGR': in_sample_cagr.get('LS', np.nan),
+            'Post-Publication CAGR': out_of_sample_cagr.get('LS', np.nan)
+        })
+
+    else: # The existing in-sample/out-of-sample logic
+        print(f"\n--- In-Sample and Out-of-Sample Performance (Annual CAGR) for {signal_to_test} ---")
+        print(f"In-Sample: {sample_start_date.strftime('%Y-%m')} → {sample_end_date.strftime('%Y-%m')}")
+        print(f"Out-of-Sample: {out_of_sample_start_date.strftime('%Y-%m')} → {end_date.strftime('%Y-%m')}")
+
+        in_sample_signal = signal_df[(signal_df['date'] >= sample_start_date) & (signal_df['date'] <= sample_end_date)]
+        out_of_sample_signal = signal_df[signal_df['date'] >= out_of_sample_start_date]
+        in_sample_crsp_market = crsp_market_df[(crsp_market_df.index >= sample_start_date) & (crsp_market_df.index <= sample_end_date)]
+        out_of_sample_crsp_market = crsp_market_df[crsp_market_df.index >= out_of_sample_start_date]
+
+        in_sample_cagr = in_sample_signal.groupby('port')['ret'].apply(calculate_cagr)
+        out_of_sample_cagr = out_of_sample_signal.groupby('port')['ret'].apply(calculate_cagr)
+
+        ls_cagr_results.append({
+            'signal': signal_to_test,
+            'in_sample_cagr': in_sample_cagr.get('LS', np.nan),
+            'out_of_sample_cagr': out_of_sample_cagr.get('LS', np.nan)
+        })
+
+        in_sample_crsp_market_cagr = calculate_cagr(in_sample_crsp_market['monthly_ret_pct'])
+        out_of_sample_crsp_market_cagr = calculate_cagr(out_of_sample_crsp_market['monthly_ret_pct'])
+
+        performance_df = pd.DataFrame({
+            'In-Sample CAGR (%)': in_sample_cagr,
+            'Out-of-Sample CAGR (%)': out_of_sample_cagr
+        })
+        crsp_market_row = pd.DataFrame({
+            'In-Sample CAGR (%)': [in_sample_crsp_market_cagr],
+            'Out-of-Sample CAGR (%)': [out_of_sample_crsp_market_cagr]
+        }, index=['CRSP Market'])
+        performance_df = pd.concat([performance_df, crsp_market_row])
+        print(performance_df.round(2).to_string())
+
+    # ================================================================
+    # STEP 7: BUILD ALIGNED SERIES FOR ROLLING PLOTS
+    # ================================================================
+    # Calculate rolling 5-year multiplicative growth and align by months since publication
+    if not run_full_sample and 'LS' in portfolio_returns.columns:
+        # Get LS portfolio returns
+        ls_returns = portfolio_returns['LS'].dropna()
+        
+        if len(ls_returns) >= 60:  # Need at least 60 months for 5-year rolling window
+            # Calculate rolling 5-year multiplicative growth (not CAGR, just cumulative growth)
+            decimal_returns = ls_returns / 100.0
+            rolling_growth = (1 + decimal_returns).rolling(window=60).apply(np.prod, raw=True)
+            rolling_growth = rolling_growth.dropna()
+            
+            # Align by months since publication (sample_end_date is publication date)
+            publication_date = sample_end_date
+            months_since_pub = []
+            growth_values = []
+            
+            for date_idx, growth_val in rolling_growth.items():
+                # Calculate months since publication (publication month = 0)
+                # Use year and month to calculate difference
+                pub_year_month = publication_date.year * 12 + publication_date.month
+                curr_year_month = date_idx.year * 12 + date_idx.month
+                months_diff = curr_year_month - pub_year_month
+                months_since_pub.append(months_diff)
+                growth_values.append(growth_val)
+            
+            if months_since_pub and growth_values:
+                aligned_series[signal_to_test] = pd.Series(growth_values, index=months_since_pub)
+
+    # ================================================================
+    # STEP 8: SAVE RAW RETURNS TO CSV
+    # ================================================================
+    print("\nSaving raw portfolio returns to CSV...")
+    raw_returns = signal_df.pivot(index="date", columns="port", values="ret").sort_index()
+    crsp_market_df_subset = crsp_market_df[['monthly_ret_pct']].rename(columns={'monthly_ret_pct': 'CRSP Market'})
+    crsp_market_df_subset = crsp_market_df_subset.reindex(raw_returns.index)
+    returns_export = pd.concat([raw_returns, crsp_market_df_subset['CRSP Market']], axis=1)
+    output_file = os.path.join(OUTPUT_RAW_RETURNS, f"{signal_to_test}_raw_returns.csv")
+    returns_export.to_csv(output_file, index_label="Date")
+    print(f"Raw returns exported to: {output_file}")
+
+# ================================================================
+# FINAL SUMMARY BAR GRAPH (MODIFIED)
+# ================================================================
+print("\n" + "="*80)
+print("Generating final summary bar graph for all LS portfolios...")
+print("="*80)
+
+summary_df = pd.DataFrame(ls_cagr_results)
+
+if not summary_df.empty:
+    summary_df = summary_df.set_index('signal')
+    if 'Pre-Publication CAGR' in summary_df.columns:
+        # Reorder columns as requested
+        summary_df = summary_df[['Pre-Publication CAGR', 'In-Sample CAGR', 'Post-Publication CAGR']]
+    else:
+        summary_df = summary_df.rename(columns={'in_sample_cagr': 'In-Sample CAGR', 'out_of_sample_cagr': 'Out-of-Sample CAGR'})
+
+    num_strategies = len(summary_df)
+    num_plots = (num_strategies + strategies_per_plot - 1) // strategies_per_plot
+
+    for i in range(num_plots):
+        start_index = i * strategies_per_plot
+        end_index = start_index + strategies_per_plot
+        chunk = summary_df.iloc[start_index:end_index]
+
+        plt.style.use("dark_background")
+        fig, ax = plt.subplots(figsize=(15, 8))
+
+        chunk.plot(kind='bar', ax=ax, rot=45, colormap='Paired')
+
+        title_suffix_text = f" - {plot_title_suffix}" if plot_title_suffix else ""
+        
+        # Build title: show range as (1-X) format per user request
+        if end_index > num_strategies:
+            end_index = num_strategies
+        
+        chunk_count = end_index - start_index  # Number of strategies in this chunk
+        
+        if num_strategies <= strategies_per_plot:
+            # All strategies fit in one plot - show (1-X) where X is total number
+            title_range = f"(1-{num_strategies})"
+        else:
+            # Multiple plots - show range for this specific chunk
+            title_range = f"({start_index+1}-{end_index})"
+        
+        part_text = f" (Part {i+1})" if num_plots > 1 else ""
+        ax.set_title(f"Long-Short (LS) Portfolio Annual CAGR {title_range}{part_text}{title_suffix_text}", fontsize=16, color="white")
+        ax.set_xlabel("Strategy Signal", color="white")
+        ax.set_ylabel("Annual CAGR (%)", color="white")
+        ax.grid(axis='y', linestyle="--", alpha=0.4)
+        ax.legend(title="Performance Period")
+        plt.tight_layout()
+
+        # Build filename: only include part number if there are multiple parts
+        if num_plots > 1:
+            output_file = os.path.join(OUTPUT_SUMMARY, f"final_ls_cagr_summary_part_{i+1}.png")
+        else:
+            output_file = os.path.join(OUTPUT_SUMMARY, "final_ls_cagr_summary.png")
+        plt.savefig(output_file)
+        print(f"Summary plot saved to: {output_file}")
+        plt.close()
+
+else:
+    print("No LS portfolio data found to create a summary graph. This may be due to 'run_full_sample' being True, or all strategies having NaN values in the pre-sample period.")
+
+# ======================================================================
+# ROLLING PLOTS ALIGNED BY MONTHS SINCE PUBLICATION
+# ======================================================================
+min_fraction = 0.3  # Only plot months where >=30% of strategies have data
+selected_signals = signals_to_test  # Use the same signals as in your script
+
+# ======================================================================
+# BUILD ALIGNED DATAFRAME
+# ======================================================================
+if len(aligned_series) == 0:
+    print("\nNo usable aligned series found for rolling plots.")
+else:
+    # Filter to only selected signals
+    aligned_series_filtered = {s: ser for s, ser in aligned_series.items() if s in selected_signals}
+
+    if not aligned_series_filtered:
+        print("No aligned series found for the selected signals.")
+    else:
+        # Combine all selected strategies into a single DataFrame aligned by Months Since Publication
+        # Use pd.concat instead of loop assignment to avoid PerformanceWarning
+        all_months = sorted(set().union(*[s.index.values for s in aligned_series_filtered.values()]))
+        aligned_series_list = []
+        for s, ser in aligned_series_filtered.items():
+            reindexed_ser = ser.reindex(all_months)
+            reindexed_ser.name = s
+            aligned_series_list.append(reindexed_ser)
+        aligned_df = pd.concat(aligned_series_list, axis=1)
+
+        # ==================================================================
+        # APPLY COVERAGE MASK
+        # ==================================================================
+        coverage_frac = aligned_df.notnull().sum(axis=1) / aligned_df.shape[1]
+        mask = coverage_frac >= min_fraction
+        aligned_df_masked = aligned_df[mask]
+        composite_masked = aligned_df_masked.mean(axis=1, skipna=True)
+
+        # ==================================================================
+        # 1️⃣ Multiplicative-Growth Rolling 5-Year Plot
+        # ==================================================================
+        plt.style.use("dark_background")
+        fig, ax = plt.subplots(figsize=(16, 9))
+        title_suffix_text = f" - {plot_title_suffix}" if plot_title_suffix else ""
+        fig.suptitle(f"Rolling 5-Year Multiplicative Growth (×) Aligned by Months Since Publication{title_suffix_text}",
+                     fontsize=16, color="white")
+
+        # Plot individual strategies with transparency
+        for s in aligned_df_masked.columns:
+            ser = aligned_df_masked[s]
+            if ser.dropna().empty:
+                continue
+
+            # Plot contiguous non-NaN blocks separately
+            notnull = ser.notnull().astype(int)
+            diffs = notnull.diff().fillna(notnull.iloc[0]).values
+            starts = np.where(diffs == 1)[0]
+            ends = np.where(diffs == -1)[0]
+            if notnull.iloc[0] == 1:
+                starts = np.insert(starts, 0, 0)
+            if notnull.iloc[-1] == 1:
+                ends = np.append(ends, len(notnull))
+            for st_idx, end_idx in zip(starts, ends):
+                x_block = aligned_df_masked.index[st_idx:end_idx]
+                y_block = ser.iloc[st_idx:end_idx].values
+                ax.plot(x_block, y_block, alpha=0.25, linewidth=1)
+
+        # EW Composite line
+        ax.plot(composite_masked.index, composite_masked.values, color="white", linewidth=2.6, label="Equal-Weight Composite")
+
+        # Publication marker
+        ax.axvline(0, color="gray", linestyle="--", linewidth=1.5)
+        if not composite_masked.dropna().empty:
+            y_top = composite_masked.dropna().max()
+            ax.text(0, y_top * 0.95, "Publication", color="white", ha="left", va="top")
+
+        ax.set_yscale("log")
+        ax.set_ylabel("Rolling 5-Year Growth (×)", color="white")
+        ax.set_xlabel("Months Since Publication", color="white")
+        ax.grid(True, linestyle="--", alpha=0.3)
+        ax.legend()
+        plt.tight_layout()
+        suffix_filename = f"_{plot_title_suffix.replace(' ', '_')}" if plot_title_suffix else ""
+        output_path = os.path.join(OUTPUT_ROLLING, f"rolling_5yr{suffix_filename}.png")
+        plt.savefig(output_path)
+        plt.close()
+        print(f"Saved: {output_path}")
+
+        # ==================================================================
+        # 2️⃣ Thinner Percentile-Band Plot (IQR Only + Median)
+        # ==================================================================
+        p25 = aligned_df_masked.quantile(0.25, axis=1)
+        p50 = aligned_df_masked.quantile(0.50, axis=1)
+        p75 = aligned_df_masked.quantile(0.75, axis=1)
+
+        plt.style.use("dark_background")
+        fig, ax = plt.subplots(figsize=(16, 9))
+        fig.suptitle(f"Rolling 5-Year Multiplicative Growth (×) Percentile Bands (IQR Only)\nAligned by Months Since Publication{title_suffix_text}",
+                     fontsize=16, color="white")
+
+        # Shaded IQR band
+        ax.fill_between(aligned_df_masked.index, p25, p75, color="cyan", alpha=0.35, label="25th–75th percentile (IQR)")
+
+        # Median line
+        ax.plot(p50.index, p50.values, color="lime", linewidth=2, label="Median (50th percentile)")
+
+        # EW Composite line
+        ax.plot(composite_masked.index, composite_masked.values, color="white", linewidth=2.6, label="Equal-Weight Composite")
+
+        # Publication marker
+        ax.axvline(0, color="gray", linestyle="--", linewidth=1.5)
+        if not composite_masked.dropna().empty:
+            y_top = composite_masked.dropna().max()
+            ax.text(0, y_top * 0.95, "Publication", color="white", ha="left", va="top")
+
+        ax.set_yscale("log")
+        ax.set_ylabel("Rolling 5-Year Growth (×)", color="white")
+        ax.set_xlabel("Months Since Publication", color="white")
+        ax.grid(True, linestyle="--", alpha=0.3)
+        ax.legend()
+        plt.tight_layout()
+        suffix_filename = f"_{plot_title_suffix.replace(' ', '_')}" if plot_title_suffix else ""
+        output_path = os.path.join(OUTPUT_ROLLING, f"rolling_5yr_percentile_bands{suffix_filename}.png")
+        plt.savefig(output_path)
+        plt.close()
+        print(f"Saved: {output_path}")
