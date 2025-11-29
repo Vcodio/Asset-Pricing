@@ -1,0 +1,38 @@
+# Exclude PNG image files
+*.png
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Data cache files (exclude cache CSVs, but keep analysis results)
+**/Cache/
+**/*_cache/
+**/*cache*.csv
+**/VIX_SKEW_Index_Cache/
+**/US_Constituents_Cache/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Analysis results - keep CSV, TXT, MD but exclude PNG
+# PNG files are already excluded by *.png above
+
