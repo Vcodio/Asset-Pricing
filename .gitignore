@@ -53,3 +53,21 @@ Peer Reviewed Research/summary_plots/
 Peer Reviewed Research/rolling_plots/
 Peer Reviewed Research/Distributions/
 
+# Exclude output folders from Datamining scripts
+Peer Review vs Datamining/Datamining/output/
+Peer Review vs Datamining/Datamining/*/backtest_plots/
+Peer Review vs Datamining/Datamining/*/trailing_cagr_plots/
+Peer Review vs Datamining/Datamining/*/raw_returns/
+Peer Review vs Datamining/Datamining/*/summary_plots/
+Peer Review vs Datamining/Datamining/*/rolling_plots/
+Peer Review vs Datamining/Datamining/*/Distributions/
+Peer Review vs Datamining/Datamining/*/backtests/
+Peer Review vs Datamining/Datamining/*/fdr_analysis/
+# Exclude any suffix-based output folders (but keep scripts and data files)
+Peer Review vs Datamining/Datamining/Datamining*/
+Peer Review vs Datamining/Datamining/Datamining -*/
+Peer Review vs Datamining/Datamining/Output/
+# But keep the scripts and data files
+!Peer Review vs Datamining/Datamining/*.py
+!Peer Review vs Datamining/Datamining/*.csv
+
